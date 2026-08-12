@@ -1,4 +1,4 @@
-# NYC Taxi Data Lake — iFood Staff Data Engineer Case
+# NYC Taxi Data Lake — iFood Data Engineer Case
 
 ## 1. Title and overview
 
