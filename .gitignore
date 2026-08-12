@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Databricks and Spark
+spark-warehouse/
+derby.log
+.databricks/
+
+# Pipeline artifacts
+pipeline_run/
+*.parquet
+*.log
+
+# OS
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
