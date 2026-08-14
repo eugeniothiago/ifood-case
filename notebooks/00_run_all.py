@@ -5,14 +5,23 @@
 
 # Step 0: make the repository's reusable modules importable in Databricks.
 # This supports both a Databricks Repo checkout and a workspace-uploaded notebook.
+import os
 import shutil
 import sys
 from pathlib import Path
 
-REPOSITORY_ROOT = Path.cwd()
-for import_path in (REPOSITORY_ROOT / "src", REPOSITORY_ROOT / "analysis", REPOSITORY_ROOT):
-    if str(import_path) not in sys.path:
-        sys.path.insert(0, str(import_path))
+# Try common workspace locations so imports work regardless of how the
+# notebook was loaded into Databricks.
+_CANDIDATE_ROOTS = [
+    "/Workspace/Users/thiagoace1@gmail.com/ifood-case",
+    "/Workspace/ifood-case",
+    os.getcwd(),
+]
+for _root in _CANDIDATE_ROOTS:
+    if os.path.isdir(os.path.join(_root, "src")):
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        break
 
 from pyspark.sql import functions as F
 
@@ -25,12 +34,13 @@ from src.gold import get_gold_summary, model_gold
 from src.ingestion import download_taxi_data
 from src.silver import get_silver_summary, transform_to_silver
 
-# Community Edition uses two-level Hive Metastore table names and DBFS as the
-# local landing zone. Change only this flag when moving to Unity Catalog.
+# Community Edition uses two-level Hive Metastore table names and the local
+# /tmp directory on the driver node as the landing zone (DBFS FUSE mounts
+# like /dbfs/ do not support POSIX mkdir in Community Edition).
 USE_COMMUNITY_EDITION = True
 config = (
     PipelineConfig.community_edition(
-        landing_path="/dbfs/FileStore/nyc_taxi/landing",
+        landing_path="/tmp/nyc_taxi/landing",
     )
     if USE_COMMUNITY_EDITION
     else PipelineConfig()
@@ -51,10 +61,13 @@ section_header("STEP 0 — CLEANUP")
 for table_name in (config.gold_table, config.silver_table, config.bronze_table):
     spark.sql(f"DROP TABLE IF EXISTS {table_name}")
     print(f"Dropped table if present: {table_name}")
-landing_path = Path(config.landing_path)
-if landing_path.exists():
-    shutil.rmtree(landing_path)
-landing_path.mkdir(parents=True, exist_ok=True)
+
+# Remove old landing files and recreate the directory.
+# Use os operations which work on the local /tmp filesystem.
+landing_path = config.landing_path
+if os.path.exists(landing_path):
+    shutil.rmtree(landing_path, ignore_errors=True)
+os.makedirs(landing_path, exist_ok=True)
 print(f"Cleared landing zone: {landing_path}")
 display(spark.createDataFrame([("cleanup", "completed")], ["step", "status"]))
 
@@ -63,13 +76,21 @@ display(spark.createDataFrame([("cleanup", "completed")], ["step", "status"]))
 # Step 1: download the five monthly Parquet files and publish raw Bronze records.
 section_header("STEP 1 — INGESTION + BRONZE")
 landing_paths = download_taxi_data(config.year, config.months, config.landing_path)
-file_uris = [
-    path if path.startswith(("dbfs:", "file:", "s3:", "abfss:")) else Path(path).resolve().as_uri()
-    for path in landing_paths
-]
+# Convert local filesystem paths to file:// URIs so Spark can read them.
+file_uris = []
+for path in landing_paths:
+    if path.startswith(("dbfs:", "file:", "s3:", "abfss:")):
+        file_uris.append(path)
+    else:
+        file_uris.append(Path(path).resolve().as_uri())
+
+for uri in file_uris:
+    size_mb = os.path.getsize(uri.replace("file://", "")) / (1024 * 1024)
+    print(f"  {os.path.basename(uri)}: {size_mb:.1f} MB")
+
 bronze_df = ingest_to_bronze(spark, file_uris, config.bronze_table)
-print(f"Downloaded files: {len(file_uris)}")
-print(f"Bronze rows: {bronze_df.count():,}")
+bronze_count = spark.read.table(config.bronze_table).count()
+print(f"\nBronze table '{config.bronze_table}': {bronze_count:,} rows")
 display(bronze_df.groupBy("VendorID").count().orderBy("VendorID"))
 
 # COMMAND ----------
@@ -110,7 +131,8 @@ display(spark.read.table(config.silver_table).limit(20))
 # Step 4: derive the DateType pickup_date and publish daily-partitioned Gold.
 section_header("STEP 4 — GOLD")
 gold_df = model_gold(spark, config.silver_table, config.gold_table)
-print(f"Gold rows: {gold_df.count():,}")
+gold_count = spark.read.table(config.gold_table).count()
+print(f"Gold table '{config.gold_table}': {gold_count:,} rows")
 display(get_gold_summary(spark, config.gold_table))
 
 # COMMAND ----------
