@@ -3,16 +3,33 @@
 
 # COMMAND ----------
 
+import os
+import sys
 from pathlib import Path
+
+# Ensure src/ is importable across Databricks workspace layouts.
+_CANDIDATE_ROOTS = [
+    "/Workspace/Users/thiagoace1@gmail.com/ifood-case",
+    "/Workspace/ifood-case",
+    os.getcwd(),
+]
+for _root in _CANDIDATE_ROOTS:
+    if os.path.isdir(os.path.join(_root, "src")):
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        break
 
 from src.bronze import ingest_to_bronze
 from src.config import PipelineConfig
 from src.ingestion import download_taxi_data
 
-# Set USE_COMMUNITY_EDITION to True when running in a two-level Hive Metastore workspace.
-USE_COMMUNITY_EDITION = False
+# Community Edition uses /tmp landing zone (DBFS FUSE mounts do not support
+# POSIX mkdir in Community Edition).
+USE_COMMUNITY_EDITION = True
 config = (
-    PipelineConfig.community_edition()
+    PipelineConfig.community_edition(
+        landing_path="/tmp/nyc_taxi/landing",
+    )
     if USE_COMMUNITY_EDITION
     else PipelineConfig()
 )
