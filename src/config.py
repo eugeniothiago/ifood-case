@@ -3,7 +3,12 @@
 from dataclasses import dataclass, field
 from typing import Final, Iterable
 
-DEFAULT_LANDING_PATH: Final[str] = "/dbfs/FileStore/nyc_taxi/landing"
+# Databricks Community Edition does not support POSIX mkdir on /dbfs/ FUSE
+# mounts (raises OSError [Errno 95] Operation not supported).  The local
+# /tmp directory on the driver node is fully POSIX-compatible and Spark can
+# read files from it via file:// URIs.  This is the standard landing zone
+# location for Community Edition notebooks.
+DEFAULT_LANDING_PATH: Final[str] = "/tmp/nyc_taxi/landing"
 DEFAULT_BRONZE_TABLE: Final[str] = "nyc_taxi.bronze.yellow_tripdata"
 DEFAULT_SILVER_TABLE: Final[str] = "nyc_taxi.silver.yellow_tripdata"
 DEFAULT_GOLD_TABLE: Final[str] = "nyc_taxi.gold.yellow_tripdata"
