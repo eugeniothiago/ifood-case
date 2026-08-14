@@ -8,7 +8,7 @@ owner:
 source:
   system: NYC Taxi and Limousine Commission
   format: parquet
-  url_template: https://d37ci6v3ury3vh.cloudfront.net/trip-data/yellow_tripdata_{year}-{month}.parquet
+  url_template: https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_{year}-{month}.parquet
   coverage:
     year: 2023
     months: [1, 2, 3, 4, 5]
