@@ -19,7 +19,7 @@ DEFAULT_YEAR: Final[int] = 2023
 DEFAULT_MONTHS: Final[tuple[int, ...]] = (1, 2, 3, 4, 5)
 PARTITION_COLUMN: Final[str] = "pickup_date"
 SOURCE_URL_TEMPLATE: Final[str] = (
-    "https://d37ci6v3ury3vh.cloudfront.net/trip-data/"
+    "https://d37ci6vzurychx.cloudfront.net/trip-data/"
     "yellow_tripdata_{year:04d}-{month:02d}.parquet"
 )
 
