@@ -7,7 +7,8 @@ import os
 import sys
 from pathlib import Path
 
-# Ensure src/ is importable across Databricks workspace layouts.
+from pyspark.sql import functions as F
+
 _CANDIDATE_ROOTS = [
     "/Workspace/Users/thiagoace1@gmail.com/ifood-case",
     "/Workspace/ifood-case",
@@ -20,11 +21,10 @@ for _root in _CANDIDATE_ROOTS:
         break
 
 from src.bronze import ingest_to_bronze
-from src.config import PipelineConfig
+from src.config import PipelineConfig, taxi_file_url
 from src.ingestion import download_taxi_data
+from src.schemas import RAW_SCHEMA
 
-# Community Edition uses /tmp landing zone (DBFS FUSE mounts do not support
-# POSIX mkdir in Community Edition).
 USE_COMMUNITY_EDITION = True
 config = (
     PipelineConfig.community_edition(
@@ -36,26 +36,41 @@ config = (
 
 # COMMAND ----------
 
-landing_paths = download_taxi_data(config.year, config.months, config.landing_path)
-file_uris = [
-    path if path.startswith(("dbfs:", "file:", "s3:", "abfss:")) else Path(path).resolve().as_uri()
-    for path in landing_paths
-]
+# Primary: download via Python (requests -> wget -> curl).
+# Fallback: read directly from HTTP with Spark (JVM DNS resolver).
+try:
+    landing_paths = download_taxi_data(config.year, config.months, config.landing_path)
+    file_uris = [
+        path if path.startswith(("dbfs:", "file:", "s3:", "abfss:")) else Path(path).resolve().as_uri()
+        for path in landing_paths
+    ]
+    bronze_df = ingest_to_bronze(spark, file_uris, config.bronze_table)
+    print("Ingestion method: local download (requests/wget/curl)")
+except Exception as download_error:
+    print(f"  Local download failed: {download_error}")
+    print("  Falling back to Spark direct HTTP read (JVM DNS resolver)...")
+    http_urls = [taxi_file_url(config.year, m) for m in config.months]
+    bronze_df = (
+        spark.read.schema(RAW_SCHEMA)
+        .parquet(*http_urls)
+        .withColumn("_source_file", F.input_file_name())
+        .withColumn("_ingestion_timestamp", F.current_timestamp())
+        .withColumn("_ingestion_date", F.current_date())
+    )
+    (
+        bronze_df.write.format("delta")
+        .mode("append")
+        .option("mergeSchema", "false")
+        .saveAsTable(config.bronze_table)
+    )
+    print("Ingestion method: Spark direct HTTP read")
 
 # COMMAND ----------
 
-bronze_df = ingest_to_bronze(spark, file_uris, config.bronze_table)
+bronze_count = spark.read.table(config.bronze_table).count()
 print(f"Bronze table: {config.bronze_table}")
-print(f"Input files: {len(file_uris)}")
-print(f"Bronze rows in this append: {bronze_df.count():,}")
+print(f"Bronze rows: {bronze_count:,}")
 
 # COMMAND ----------
 
-for path in landing_paths:
-    print(f"{path}: {Path(path).stat().st_size:,} bytes")
-
-# COMMAND ----------
-
-# The source schema is intentionally retained in Bronze; quality filtering belongs
-# to Silver after the EDA notebook has profiled the untouched data.
 bronze_df.printSchema()
