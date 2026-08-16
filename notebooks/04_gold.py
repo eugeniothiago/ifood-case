@@ -3,12 +3,26 @@
 
 # COMMAND ----------
 
+import os
+import sys
+from pathlib import Path
+
+_CANDIDATE_ROOTS = [
+    "/Workspace/Users/thiagoace1@gmail.com/ifood-case",
+    "/Workspace/ifood-case",
+    os.getcwd(),
+]
+for _root in _CANDIDATE_ROOTS:
+    if os.path.isdir(os.path.join(_root, "src")):
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        break
+
 from src.config import PipelineConfig
 from src.delta_optimizations import run_all_optimizations
 from src.gold import get_gold_summary, model_gold
 
-# Set this to True for Databricks Community Edition's two-level Hive Metastore.
-USE_COMMUNITY_EDITION = False
+USE_COMMUNITY_EDITION = True
 config = (
     PipelineConfig.community_edition()
     if USE_COMMUNITY_EDITION
@@ -20,17 +34,18 @@ GOLD_TABLE = config.gold_table
 # COMMAND ----------
 
 gold_df = model_gold(spark, SILVER_TABLE, GOLD_TABLE)
-print(f"Silver table: {SILVER_TABLE}")
-print(f"Gold table: {GOLD_TABLE}")
-print(f"Gold row count: {gold_df.count():,}")
+gold_count = spark.read.table(GOLD_TABLE).count()
+print(f"Gold table '{GOLD_TABLE}': {gold_count:,} rows")
 
 # COMMAND ----------
 
-# The physical and logical key is a DateType daily pickup_date, not a month string.
-partition_distribution = get_gold_summary(spark, GOLD_TABLE)
-display(partition_distribution)
+display(get_gold_summary(spark, GOLD_TABLE))
 
 # COMMAND ----------
 
-# Each operation reports elapsed time and the final history count in the notebook log.
+# Delta optimizations: compact files, z-order by VendorID, vacuum old files.
 run_all_optimizations(spark, GOLD_TABLE)
+
+# COMMAND ----------
+
+display(spark.sql(f"DESCRIBE HISTORY {GOLD_TABLE}").limit(10))

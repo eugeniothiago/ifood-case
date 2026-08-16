@@ -15,7 +15,7 @@ The consumption contract keeps the five fields required by the case:
 The source is the [official NYC Taxi & Limousine Commission Trip Record Data page](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page). The implementation downloads the monthly files from the TLC CloudFront URL template used in [`src/config.py`](src/config.py):
 
 ```text
-https://d37ci6v3ury3vh.cloudfront.net/trip-data/yellow_tripdata_{year}-{month}.parquet
+https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_{year}-{month}.parquet
 ```
 
 The implementation deliberately does not put query-result numbers in this README. Results are generated from the verified Gold table at execution time, so the documentation does not turn a refreshable analytical output into an unversioned claim.
@@ -158,7 +158,7 @@ The quality functions return predicates that are **true for invalid rows**. `val
 
 ### Why apply DQ in Silver?
 
-Bronze remains lossless for investigation and replay. Silver is where the five-field consumer contract is enforced, so quality logic is centralized and applied before Gold or analytical SQL. `notebooks/01_eda.py` runs first specifically so the rules are observable decisions rather than hidden assumptions. The current case path rejects invalid rows from Silver; a production DLT pipeline could use the same functions with `@dlt.expect_or_drop`, and a production batch path should additionally write a quarantine table containing the original fields, lineage, and failed expectations.
+Bronze remains lossless for investigation and replay. Silver is where the five-field consumer contract is enforced, so quality logic is centralized and applied before Gold or analytical SQL. `notebooks/02_eda.py` runs after Bronze ingestion specifically so the rules are observable decisions rather than hidden assumptions. The current case path rejects invalid rows from Silver; a production DLT pipeline could use the same functions with `@dlt.expect_or_drop`, and a production batch path should additionally write a quarantine table containing the original fields, lineage, and failed expectations.
 
 ## 7. Exploratory data analysis — findings and decisions
 
@@ -265,8 +265,8 @@ data/ifood-case/
 │   └── q2_avg_passengers_per_hour.py         # Q2 standard and optimized May hourly aggregations.
 ├── notebooks/
 │   ├── 00_run_all.py                         # One-command end-to-end Databricks orchestration and final outputs.
-│   ├── 01_eda.py                             # Pre-transformation schema, distribution, anomaly, and volume profiling.
-│   ├── 02_ingestion_bronze.py                # Download and Bronze append step.
+│   ├── 01_ingestion_bronze.py      # Download and Bronze append step.
+│   ├── 02_eda.py                 # Pre-transformation schema, distribution, anomaly, and volume profiling.
 │   ├── 03_silver.py                          # Silver transformation and DQ summary step.
 │   ├── 04_gold.py                            # Gold modeling, partition inspection, and Delta maintenance step.
 │   └── 05_analysis.py                        # Standalone Q1/Q2 execution and physical-plan inspection.
@@ -297,7 +297,7 @@ The all-in-one notebook intentionally drops the configured tables and clears its
 Run the notebooks in this order when inspecting each boundary independently:
 
 ```text
-01_eda.py → 02_ingestion_bronze.py → 03_silver.py → 04_gold.py → 05_analysis.py
+01_ingestion_bronze.py → 02_eda.py → 03_silver.py → 04_gold.py → 05_analysis.py
 ```
 
 Set `USE_COMMUNITY_EDITION = True` in the standalone notebooks when using two-level Hive Metastore names. The standalone EDA assumes Bronze already exists; the later notebooks likewise assume their upstream table exists.
@@ -387,9 +387,17 @@ Apply the `layer` value separately to each table. Confirm whether the organizati
 
 | Test file | Coverage |
 |---|---|
-| `tests/test_schemas.py` | Confirms the raw schema has 19 source columns, the consumption schema has exactly the five required fields, Gold adds `pickup_date` as `DateType`, and the tuple/schema contracts stay aligned. |
-| `tests/test_data_quality.py` | Confirms exact schema validation accepts a matching schema and rejects a wrong type, and confirms that all five named expectations are present and callable. |
-| `tests/test_transformations.py` | Confirms deterministic pickup-date derivation, `yyyy-MM` month derivation, and pickup-hour extraction. |
+| `tests/test_schemas.py` | Covers raw field count, exact field order, key Spark data types, nullability, required-column subset alignment, consumption `LongType`/non-nullability, and the six-field non-nullable Gold schema. |
+| `tests/test_data_quality.py` | Covers exact schema acceptance/rejection for wrong types, extra/missing/reordered fields, case-period constants, expectation names/callability, and mocked predicate composition for invalid and valid rows. |
+| `tests/test_transformations.py` | Covers datetime/date/ISO-8601 normalization, UTC-suffixed timestamps, midnight and month boundaries, hour extraction, and unsupported input types. |
+| `tests/test_config.py` | Covers URL formatting and validation, immutable default/custom pipeline configuration, month/year/partition validation, and Community Edition table fallbacks. |
+| `tests/test_ingestion.py` | Covers directory creation, idempotent existing-file skips, returned paths, HTTP/empty-body failures, atomic temporary-file replacement, cleanup, and multi-month downloads with mocked requests. |
+| `tests/test_bronze.py` | Covers Bronze validation for empty file lists and empty or whitespace-only table names before Spark access. |
+| `tests/test_silver.py` | Covers Silver and summary table-name validation plus the overwrite write-mode contract. |
+| `tests/test_gold.py` | Covers Gold and summary table-name validation plus daily partition and overwrite constants. |
+| `tests/test_delta_optimizations.py` | Covers validation-before-Spark behavior for OPTIMIZE, ZORDER, VACUUM, and history, retention limits, and generated OPTIMIZE SQL. |
+| `tests/test_analysis.py` | Covers Q1/Q2 table-name validation, May/June boundary constants, and mocked construction of the May filter without a Spark session. |
+| `tests/test_data_contract.py` | Covers YAML version/status/storage, source and consumption schemas, quality-rule names/count, partitioning, Unity Catalog table names, and Community Edition fallbacks. |
 
 ### Run the tests
 
