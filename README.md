@@ -1,8 +1,8 @@
-# NYC Taxi Data Lake — iFood Staff Data Engineer Case
+# NYC Taxi Data Lake — iFood Data Engineer Case
 
 ## 1. Title and overview
 
-This repository implements the iFood Staff Data Engineer case for NYC TLC Yellow Taxi trips. It downloads the official **January–May 2023** monthly Parquet files, preserves them in a replayable landing/Bronze path, profiles the untouched data, applies an explicit quality contract in Silver, publishes a daily-partitioned Gold Delta table, and answers the two business questions with PySpark.
+This repository implements the iFood Data Engineer case for NYC TLC Yellow Taxi trips. It downloads the official **January–May 2023** monthly Parquet files, preserves them in a replayable landing/Bronze path, profiles the untouched data, applies an explicit quality contract in Silver, publishes a daily-partitioned Gold Delta table, and answers the two business questions with PySpark.
 
 The consumption contract keeps the five fields required by the case:
 
