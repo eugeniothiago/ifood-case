@@ -21,9 +21,8 @@ for _root in _CANDIDATE_ROOTS:
         break
 
 from src.bronze import ingest_to_bronze
-from src.config import PipelineConfig, taxi_file_url
+from src.config import PipelineConfig, taxi_file_urls
 from src.ingestion import download_taxi_data
-from src.schemas import RAW_SCHEMA
 
 USE_COMMUNITY_EDITION = True
 config = (
@@ -36,34 +35,54 @@ config = (
 
 # COMMAND ----------
 
-# Primary: download via Python (requests -> wget -> curl).
-# Fallback: read directly from HTTP with Spark (JVM DNS resolver).
+# Strategy 1: dbutils.fs.cp (Databricks JVM HTTP client).
+# The JVM HTTP client resolves DNS independently from the Python process
+# and can download from CloudFront URLs that fail with requests/wget/curl.
+# This is the most reliable download method in Databricks Community Edition.
+# We try both primary and fallback CloudFront domains for each file.
+_ingestion_method = None
 try:
-    landing_paths = download_taxi_data(config.year, config.months, config.landing_path)
+    for month in config.months:
+        filename = f"yellow_tripdata_{config.year:04d}-{month:02d}.parquet"
+        dest = f"{config.landing_path}/{filename}"
+        downloaded = False
+        for url in taxi_file_urls(config.year, month):
+            try:
+                dbutils.fs.cp(url, dest, True)  # True = overwrite
+                print(f"  Downloaded {filename} via dbutils.fs.cp")
+                downloaded = True
+                break
+            except Exception as url_err:
+                print(f"  dbutils.fs.cp failed for {url}: {url_err}")
+        if not downloaded:
+            raise RuntimeError(f"All URLs failed for {filename}")
+
     file_uris = [
-        path if path.startswith(("dbfs:", "file:", "s3:", "abfss:")) else Path(path).resolve().as_uri()
-        for path in landing_paths
+        f"{config.landing_path}/yellow_tripdata_{config.year:04d}-{m:02d}.parquet"
+        for m in config.months
     ]
     bronze_df = ingest_to_bronze(spark, file_uris, config.bronze_table)
-    print("Ingestion method: local download (requests/wget/curl)")
-except Exception as download_error:
-    print(f"  Local download failed: {download_error}")
-    print("  Falling back to Spark direct HTTP read (JVM DNS resolver)...")
-    http_urls = [taxi_file_url(config.year, m) for m in config.months]
-    bronze_df = (
-        spark.read.schema(RAW_SCHEMA)
-        .parquet(*http_urls)
-        .withColumn("_source_file", F.input_file_name())
-        .withColumn("_ingestion_timestamp", F.current_timestamp())
-        .withColumn("_ingestion_date", F.current_date())
-    )
-    (
-        bronze_df.write.format("delta")
-        .mode("append")
-        .option("mergeSchema", "false")
-        .saveAsTable(config.bronze_table)
-    )
-    print("Ingestion method: Spark direct HTTP read")
+    _ingestion_method = "dbutils.fs.cp (JVM HTTP client)"
+except Exception as e1:
+    print(f"  dbutils.fs.cp strategy failed: {e1}")
+    print("  Falling back to local download (requests -> urllib -> wget -> curl)...")
+    # Strategy 2: local download via Python (requests -> urllib -> wget -> curl).
+    try:
+        landing_paths = download_taxi_data(config.year, config.months, config.landing_path)
+        file_uris = [
+            path if path.startswith(("dbfs:", "file:", "s3:", "abfss:")) else Path(path).resolve().as_uri()
+            for path in landing_paths
+        ]
+        bronze_df = ingest_to_bronze(spark, file_uris, config.bronze_table)
+        _ingestion_method = "local download (requests/urllib/wget/curl)"
+    except Exception as e2:
+        raise RuntimeError(
+            f"All ingestion methods failed:\n"
+            f"  dbutils.fs.cp: {e1}\n"
+            f"  local download: {e2}"
+        )
+
+print(f"Ingestion method: {_ingestion_method}")
 
 # COMMAND ----------
 

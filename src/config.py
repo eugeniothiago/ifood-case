@@ -18,14 +18,22 @@ COMMUNITY_GOLD_TABLE: Final[str] = "gold.yellow_tripdata"
 DEFAULT_YEAR: Final[int] = 2023
 DEFAULT_MONTHS: Final[tuple[int, ...]] = (1, 2, 3, 4, 5)
 PARTITION_COLUMN: Final[str] = "pickup_date"
+
+# NYC TLC hosts Parquet files on AWS CloudFront.  The primary and fallback
+# domains are both valid; DNS resolution may succeed on one but not the other
+# depending on the cluster's network configuration.
 SOURCE_URL_TEMPLATE: Final[str] = (
     "https://d37ci6vzurychx.cloudfront.net/trip-data/"
+    "yellow_tripdata_{year:04d}-{month:02d}.parquet"
+)
+FALLBACK_URL_TEMPLATE: Final[str] = (
+    "https://d37ci6v3ury3vh.cloudfront.net/trip-data/"
     "yellow_tripdata_{year:04d}-{month:02d}.parquet"
 )
 
 
 def taxi_file_url(year: int, month: int) -> str:
-    """Return the official NYC TLC CloudFront URL for one monthly file."""
+    """Return the primary NYC TLC CloudFront URL for one monthly file."""
     if year < 2000:
         raise ValueError("year must be a four-digit calendar year")
     if month not in range(1, 13):
@@ -33,11 +41,28 @@ def taxi_file_url(year: int, month: int) -> str:
     return SOURCE_URL_TEMPLATE.format(year=year, month=month)
 
 
+def taxi_file_urls(year: int, month: int) -> list[str]:
+    """Return all known CloudFront URLs for one monthly file (primary + fallback).
+
+    The download code should try each URL in order until one succeeds.
+    """
+    if year < 2000:
+        raise ValueError("year must be a four-digit calendar year")
+    if month not in range(1, 13):
+        raise ValueError("month must be between 1 and 12")
+    primary = SOURCE_URL_TEMPLATE.format(year=year, month=month)
+    fallback = FALLBACK_URL_TEMPLATE.format(year=year, month=month)
+    urls = [primary]
+    if fallback != primary:
+        urls.append(fallback)
+    return urls
+
+
 @dataclass(frozen=True)
 class PipelineConfig:
     """Immutable runtime configuration shared by notebooks and source modules.
 
-    The default table names target Unity Catalog. ``community_edition`` provides
+    The default table names target Unity Catalog.  ``community_edition`` provides
     two-level Hive Metastore names for Databricks Community Edition, which does
     not provide Unity Catalog in the same way as a full workspace.
     """

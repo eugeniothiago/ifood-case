@@ -1,7 +1,7 @@
 """Unit tests for idempotent, atomic taxi-file ingestion.
 
-Updated for the multi-strategy download fallback (requests -> wget -> curl).
-The subprocess fallbacks are mocked to prevent real network calls.
+Updated for the multi-strategy download fallback (requests -> urllib -> wget -> curl).
+The subprocess and urllib fallbacks are mocked to prevent real network calls.
 """
 
 from pathlib import Path
@@ -28,6 +28,11 @@ def _mock_subprocess_failure(*args, **kwargs):
     result.returncode = 1
     result.stderr = b"command not found"
     return result
+
+
+def _mock_urllib_failure(*args, **kwargs):
+    """Simulate a urllib.request.urlretrieve failure."""
+    raise ConnectionError("DNS resolution failed")
 
 
 def test_download_creates_directory() -> None:
@@ -66,6 +71,8 @@ def test_download_raises_on_http_error() -> None:
     response.raise_for_status.side_effect = requests.HTTPError("server error")
     with TemporaryDirectory() as root, patch(
         "src.ingestion.requests.get", return_value=response
+    ), patch(
+        "src.ingestion.urllib.request.urlretrieve", side_effect=_mock_urllib_failure
     ), patch("src.ingestion.subprocess.run", side_effect=_mock_subprocess_failure):
         with pytest.raises(RuntimeError, match="All download strategies failed"):
             download_taxi_data(2023, [1], root)
@@ -75,6 +82,8 @@ def test_download_raises_on_empty_body() -> None:
     """A successful response with no body must be rejected after all strategies fail."""
     with TemporaryDirectory() as root, patch(
         "src.ingestion.requests.get", return_value=_response([])
+    ), patch(
+        "src.ingestion.urllib.request.urlretrieve", side_effect=_mock_urllib_failure
     ), patch("src.ingestion.subprocess.run", side_effect=_mock_subprocess_failure):
         with pytest.raises(RuntimeError, match="All download strategies failed"):
             download_taxi_data(2023, [1], root)
@@ -102,8 +111,21 @@ def test_download_multiple_months() -> None:
         assert all(Path(path).is_file() for path in paths)
 
 
+def test_download_fallback_to_urllib_succeeds() -> None:
+    """If requests fails, urllib should be tried as fallback."""
+
+    def _urllib_success(url: str, path: str) -> None:
+        Path(path).write_bytes(b"urllib data")
+
+    with TemporaryDirectory() as root, patch(
+        "src.ingestion.requests.get", side_effect=requests.ConnectionError("DNS failed")
+    ), patch("src.ingestion.urllib.request.urlretrieve", side_effect=_urllib_success):
+        paths = download_taxi_data(2023, [1], root)
+        assert Path(paths[0]).read_bytes() == b"urllib data"
+
+
 def test_download_fallback_to_wget_succeeds() -> None:
-    """If requests fails, wget should be tried as fallback."""
+    """If requests and urllib fail, wget should be tried as fallback."""
     def _wget_success(*args, **kwargs):
         result = MagicMock()
         result.returncode = 0
@@ -116,19 +138,24 @@ def test_download_fallback_to_wget_succeeds() -> None:
 
     with TemporaryDirectory() as root, patch(
         "src.ingestion.requests.get", side_effect=requests.ConnectionError("DNS failed")
+    ), patch(
+        "src.ingestion.urllib.request.urlretrieve", side_effect=_mock_urllib_failure
     ), patch("src.ingestion.subprocess.run", side_effect=_wget_success):
         paths = download_taxi_data(2023, [1], root)
         assert Path(paths[0]).read_bytes() == b"wget data"
 
 
 def test_download_all_strategies_fail() -> None:
-    """If all three strategies fail, the error lists each failure."""
+    """If all four strategies fail, the error lists each failure."""
     with TemporaryDirectory() as root, patch(
         "src.ingestion.requests.get", side_effect=requests.ConnectionError("DNS failed")
+    ), patch(
+        "src.ingestion.urllib.request.urlretrieve", side_effect=_mock_urllib_failure
     ), patch("src.ingestion.subprocess.run", side_effect=_mock_subprocess_failure):
         with pytest.raises(RuntimeError) as exc_info:
             download_taxi_data(2023, [1], root)
         error_msg = str(exc_info.value)
         assert "requests" in error_msg
+        assert "urllib" in error_msg
         assert "wget" in error_msg
         assert "curl" in error_msg
