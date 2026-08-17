@@ -5,9 +5,6 @@ from typing import Sequence
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-from .schemas import RAW_SCHEMA
-from .data_quality import validate_schema
-
 
 def create_schemas(spark: SparkSession, schemas: Sequence[str]) -> None:
     """Create Hive databases if they do not exist (needed for Community Edition).
@@ -34,6 +31,11 @@ def ingest_to_bronze(
 ) -> DataFrame:
     """Read raw Parquet files and append them to a Delta Bronze table.
 
+    Bronze preserves the source columns as-is. We do NOT force an explicit
+    schema on read because NYC TLC Parquet files can have type differences
+    across months (e.g. passenger_count is INT64 in some files, DOUBLE in
+    others). Spark's mergeSchema handles this automatically.
+
     Uses _metadata.file_path (Spark 3.0+) instead of input_file_name() because
     Unity Catalog does not support input_file_name().
     """
@@ -42,9 +44,8 @@ def ingest_to_bronze(
     if not table_name.strip():
         raise ValueError("table_name cannot be empty")
 
-    raw_df = spark.read.schema(RAW_SCHEMA).parquet(*file_paths)
-    if not validate_schema(raw_df, RAW_SCHEMA):
-        raise ValueError("Bronze input schema does not match RAW_SCHEMA")
+    # Read without forcing schema — let Spark infer and merge across files.
+    raw_df = spark.read.option("mergeSchema", "true").parquet(*file_paths)
 
     bronze_df = (
         raw_df.withColumn("_source_file", F.col("_metadata.file_path"))
@@ -54,7 +55,7 @@ def ingest_to_bronze(
     (
         bronze_df.write.format("delta")
         .mode("append")
-        .option("mergeSchema", "false")
+        .option("mergeSchema", "true")
         .saveAsTable(table_name)
     )
     return bronze_df

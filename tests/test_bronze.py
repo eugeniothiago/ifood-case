@@ -1,6 +1,6 @@
 """Unit tests for Bronze ingestion helpers without a live Spark session."""
 
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
