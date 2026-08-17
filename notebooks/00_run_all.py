@@ -32,12 +32,16 @@ from src.gold import get_gold_summary, model_gold
 from src.ingestion import download_taxi_data
 from src.silver import get_silver_summary, transform_to_silver
 
-# Community Edition uses two-level Hive Metastore table names and the local
-# /tmp directory on the driver node as the landing zone.
+# Community Edition uses two-level Hive Metastore table names.
+# Landing zone MUST be under /Workspace/ because Community Edition Spark
+# cannot read from file:///tmp/ (LocalFilesystemAccessDeniedException).
+# For dbutils.fs.cp we use dbfs:/tmp/ which is DBFS (Spark can read it).
 USE_COMMUNITY_EDITION = True
+WORKSPACE_LANDING = os.path.join(_root, "landing")
+DBFS_LANDING = "dbfs:/tmp/nyc_taxi/landing"
 config = (
     PipelineConfig.community_edition(
-        landing_path="/tmp/nyc_taxi/landing",
+        landing_path=WORKSPACE_LANDING,
     )
     if USE_COMMUNITY_EDITION
     else PipelineConfig()
@@ -58,11 +62,19 @@ for table_name in (config.gold_table, config.silver_table, config.bronze_table):
     spark.sql(f"DROP TABLE IF EXISTS {table_name}")
     print(f"Dropped table if present: {table_name}")
 
-landing_path = config.landing_path
-if os.path.exists(landing_path):
-    shutil.rmtree(landing_path, ignore_errors=True)
-os.makedirs(landing_path, exist_ok=True)
-print(f"Cleared landing zone: {landing_path}")
+# Clean both landing zones.
+if os.path.exists(WORKSPACE_LANDING):
+    shutil.rmtree(WORKSPACE_LANDING, ignore_errors=True)
+os.makedirs(WORKSPACE_LANDING, exist_ok=True)
+try:
+    dbutils.fs.rm(DBFS_LANDING, True)
+except Exception:
+    pass
+try:
+    dbutils.fs.mkdirs(DBFS_LANDING)
+except Exception:
+    pass
+print(f"Cleared landing zones: {WORKSPACE_LANDING} + {DBFS_LANDING}")
 display(spark.createDataFrame([("cleanup", "completed")], ["step", "status"]))
 
 # COMMAND ----------
@@ -70,16 +82,15 @@ display(spark.createDataFrame([("cleanup", "completed")], ["step", "status"]))
 # Step 1: download the five monthly Parquet files and publish raw Bronze records.
 section_header("STEP 1 - INGESTION + BRONZE")
 
-# Strategy 1: dbutils.fs.cp (Databricks JVM HTTP client).
-# The JVM HTTP client resolves DNS independently from the Python process
-# and can download from CloudFront URLs that fail with requests/wget/curl.
-# This is the most reliable download method in Databricks Community Edition.
-# We try both primary and fallback CloudFront domains for each file.
+# Strategy 1: dbutils.fs.cp from HTTP URL to DBFS.
+# dbutils.fs uses the JVM HTTP client which resolves DNS independently from
+# Python and can download from CloudFront URLs that fail with requests/wget/curl.
+# Destination is dbfs:/tmp/nyc_taxi/landing/ (Spark can read from DBFS).
 _ingestion_method = None
 try:
     for month in config.months:
         filename = f"yellow_tripdata_{config.year:04d}-{month:02d}.parquet"
-        dest = f"{config.landing_path}/{filename}"
+        dest = f"{DBFS_LANDING}/{filename}"
         downloaded = False
         for url in taxi_file_urls(config.year, month):
             try:
@@ -90,26 +101,29 @@ try:
                 print(f"  dbutils.fs.cp failed for {url}: {url_err}")
         if not downloaded:
             raise RuntimeError(f"All URLs failed for {filename}")
-        print(f"  Downloaded {filename} via dbutils.fs.cp")
+        print(f"  Downloaded {filename} via dbutils.fs.cp -> {dest}")
 
     file_uris = [
-        f"{config.landing_path}/yellow_tripdata_{config.year:04d}-{m:02d}.parquet"
+        f"{DBFS_LANDING}/yellow_tripdata_{config.year:04d}-{m:02d}.parquet"
         for m in config.months
     ]
     bronze_df = ingest_to_bronze(spark, file_uris, config.bronze_table)
-    _ingestion_method = "dbutils.fs.cp (JVM HTTP client)"
+    _ingestion_method = "dbutils.fs.cp -> DBFS"
 except Exception as e1:
     print(f"  dbutils.fs.cp strategy failed: {e1}")
     print("  Falling back to local download (requests -> urllib -> wget -> curl)...")
-    # Strategy 2: local download via Python (requests -> urllib -> wget -> curl).
+    print(f"  Landing zone: {WORKSPACE_LANDING}")
+    # Strategy 2: Python download to /Workspace/ path (Spark can read it).
     try:
-        landing_paths = download_taxi_data(config.year, config.months, config.landing_path)
-        file_uris = [
-            path if path.startswith(("dbfs:", "file:", "s3:", "abfss:")) else Path(path).resolve().as_uri()
-            for path in landing_paths
-        ]
+        landing_paths = download_taxi_data(config.year, config.months, WORKSPACE_LANDING)
+        # Do NOT convert to file:// URI - pass /Workspace/ path directly.
+        # Community Edition Spark can read /Workspace/ paths but not file:///tmp/.
+        file_uris = list(landing_paths)
+        for uri in file_uris:
+            size_mb = os.path.getsize(uri) / (1024 * 1024)
+            print(f"  {os.path.basename(uri)}: {size_mb:.1f} MB")
         bronze_df = ingest_to_bronze(spark, file_uris, config.bronze_table)
-        _ingestion_method = "local download (requests/urllib/wget/curl)"
+        _ingestion_method = "local download -> /Workspace/"
     except Exception as e2:
         raise RuntimeError(
             f"All ingestion methods failed:\n"
