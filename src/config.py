@@ -24,7 +24,6 @@ FALLBACK_URL_TEMPLATE: Final[str] = (
 )
 
 # DBFS landing path for dbutils.fs.cp (Spark can read from DBFS in Community Edition).
-DBFS_LANDING_PATH: Final[str] = "dbfs:/tmp/nyc_taxi/landing"
 
 
 def taxi_file_url(year: int, month: int) -> str:

@@ -10,7 +10,6 @@ from src.config import (
     COMMUNITY_BRONZE_TABLE,
     COMMUNITY_SILVER_TABLE,
     COMMUNITY_GOLD_TABLE,
-    DBFS_LANDING_PATH,
 )
 
 
@@ -37,11 +36,6 @@ def test_taxi_file_urls_returns_multiple() -> None:
     urls = taxi_file_urls(2023, 1)
     assert len(urls) >= 1
     assert "yellow_tripdata_2023-01.parquet" in urls[0]
-
-
-def test_dbfs_landing_path_is_dbfs() -> None:
-    """DBFS landing path must start with dbfs: for Spark readability."""
-    assert DBFS_LANDING_PATH.startswith("dbfs:")
 
 
 @pytest.mark.parametrize("year", [1999, 0, -1])
