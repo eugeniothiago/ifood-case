@@ -33,22 +33,35 @@ def _read_and_normalize(spark: SparkSession, file_path: str) -> DataFrame:
     """Read one Parquet file and cast all RAW_SCHEMA columns to consistent types.
 
     NYC TLC monthly files can have type mismatches (e.g. passenger_count is
-    INT64 in some months, DOUBLE in others). Reading each file individually and
-    casting to a shared schema avoids mergeSchema failures.
+    INT64 in some months, DOUBLE in others) and case mismatches (e.g.
+    Airport_fee vs airport_fee). Reading each file individually, casting to
+    a shared schema, and dropping case-variant duplicates avoids merge errors.
     """
     df = spark.read.parquet(file_path)
 
-    select_exprs = []
-    for field in RAW_SCHEMA.fields:
-        if field.name in df.columns:
-            select_exprs.append(F.col(field.name).cast(field.dataType).alias(field.name))
-        else:
-            select_exprs.append(F.lit(None).cast(field.dataType).alias(field.name))
+    # Build a case-insensitive lookup of source column names.
+    source_cols_lower = {c.lower(): c for c in df.columns}
 
-    # Preserve any extra source columns not in RAW_SCHEMA.
-    raw_names = {f.name for f in RAW_SCHEMA.fields}
+    select_exprs = []
+    used_source_cols: set[str] = set()
+
+    for field in RAW_SCHEMA.fields:
+        # Match case-insensitively so Airport_fee maps to airport_fee if present.
+        src_col = source_cols_lower.get(field.name.lower())
+        if src_col and src_col in df.columns:
+            select_exprs.append(
+                F.col(src_col).cast(field.dataType).alias(field.name)
+            )
+            used_source_cols.add(src_col)
+        else:
+            select_exprs.append(
+                F.lit(None).cast(field.dataType).alias(field.name)
+            )
+
+    # Preserve any extra source columns not already consumed (case-insensitive).
+    raw_names_lower = {f.name.lower() for f in RAW_SCHEMA.fields}
     for col_name in df.columns:
-        if col_name not in raw_names:
+        if col_name not in used_source_cols and col_name.lower() not in raw_names_lower:
             select_exprs.append(F.col(col_name))
 
     df = df.select(*select_exprs)
@@ -62,8 +75,8 @@ def ingest_to_bronze(
     """Read raw Parquet files and append them to a Delta Bronze table.
 
     Each file is read individually and cast to the shared RAW_SCHEMA to handle
-    type differences across monthly TLC files. Files are then unioned by name
-    and written to Delta as a single Bronze table with a consistent schema.
+    type and case differences across monthly TLC files. Files are then unioned
+    by name and written to Delta as a single Bronze table with a consistent schema.
     """
     if not file_paths:
         raise ValueError("file_paths cannot be empty")
