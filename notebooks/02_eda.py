@@ -24,6 +24,7 @@ for _root in _CANDIDATE_ROOTS:
 
 from pyspark.sql import functions as F
 
+from src.bronze import create_schemas
 from src.config import PipelineConfig
 
 USE_COMMUNITY_EDITION = True

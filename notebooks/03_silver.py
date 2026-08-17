@@ -18,11 +18,13 @@ for _root in _CANDIDATE_ROOTS:
             sys.path.insert(0, _root)
         break
 
+from src.bronze import create_schemas
 from src.config import PipelineConfig
 from src.silver import get_silver_summary, transform_to_silver
 
 USE_COMMUNITY_EDITION = True
 config = (
+create_schemas(spark, config.all_schemas)
     PipelineConfig.community_edition()
     if USE_COMMUNITY_EDITION
     else PipelineConfig()

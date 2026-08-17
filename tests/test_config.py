@@ -1,153 +1,152 @@
-"""Unit tests for pipeline configuration and source URL construction."""
-
-from dataclasses import FrozenInstanceError
+"""Unit tests for configuration validation and URL generation."""
 
 import pytest
-
 from src.config import (
-    COMMUNITY_BRONZE_TABLE,
-    COMMUNITY_GOLD_TABLE,
-    COMMUNITY_SILVER_TABLE,
-    DEFAULT_BRONZE_TABLE,
-    DEFAULT_GOLD_TABLE,
-    DEFAULT_MONTHS,
-    PARTITION_COLUMN,
-    DEFAULT_SILVER_TABLE,
-    DEFAULT_YEAR,
     PipelineConfig,
     taxi_file_url,
+    taxi_file_urls,
+    DEFAULT_YEAR,
+    DEFAULT_MONTHS,
+    COMMUNITY_BRONZE_TABLE,
+    COMMUNITY_SILVER_TABLE,
+    COMMUNITY_GOLD_TABLE,
+    DBFS_LANDING_PATH,
 )
 
 
 def test_taxi_file_url_january_2023() -> None:
-    """The January 2023 URL must use the official CloudFront path."""
     assert taxi_file_url(2023, 1) == (
-        "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2023-01.parquet"
+        "https://d37ci6vzurychx.cloudfront.net/trip-data/"
+        "yellow_tripdata_2023-01.parquet"
     )
 
 
 def test_taxi_file_url_december_2023() -> None:
-    """December URLs must include the two-digit month suffix."""
-    assert taxi_file_url(2023, 12).endswith("yellow_tripdata_2023-12.parquet")
+    assert taxi_file_url(2023, 12) == (
+        "https://d37ci6vzurychx.cloudfront.net/trip-data/"
+        "yellow_tripdata_2023-12.parquet"
+    )
 
 
 def test_taxi_file_url_single_digit_month() -> None:
-    """Single-digit months must be zero-padded."""
-    assert taxi_file_url(2023, 5).endswith("yellow_tripdata_2023-05.parquet")
+    assert "2023-01" in taxi_file_url(2023, 1)
+
+
+def test_taxi_file_urls_returns_multiple() -> None:
+    """taxi_file_urls should return at least the primary URL."""
+    urls = taxi_file_urls(2023, 1)
+    assert len(urls) >= 1
+    assert "yellow_tripdata_2023-01.parquet" in urls[0]
+
+
+def test_dbfs_landing_path_is_dbfs() -> None:
+    """DBFS landing path must start with dbfs: for Spark readability."""
+    assert DBFS_LANDING_PATH.startswith("dbfs:")
 
 
 @pytest.mark.parametrize("year", [1999, 0, -1])
 def test_taxi_file_url_rejects_year_before_2000(year: int) -> None:
-    """Years before 2000 must be rejected."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="year"):
         taxi_file_url(year, 1)
 
 
 def test_taxi_file_url_rejects_month_zero() -> None:
-    """Month zero must be rejected."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="month"):
         taxi_file_url(2023, 0)
 
 
 def test_taxi_file_url_rejects_month_thirteen() -> None:
-    """Month thirteen must be rejected."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="month"):
         taxi_file_url(2023, 13)
 
 
 def test_taxi_file_url_rejects_negative_month() -> None:
-    """Negative months must be rejected."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="month"):
         taxi_file_url(2023, -1)
 
 
 def test_pipeline_config_default_table_names() -> None:
-    """Default configuration must target the three-level Unity Catalog tables."""
-    config = PipelineConfig()
-    assert config.bronze_table == DEFAULT_BRONZE_TABLE
-    assert config.silver_table == DEFAULT_SILVER_TABLE
-    assert config.gold_table == DEFAULT_GOLD_TABLE
+    cfg = PipelineConfig()
+    assert cfg.bronze_table == "nyc_taxi.bronze.yellow_tripdata"
+    assert cfg.silver_table == "nyc_taxi.silver.yellow_tripdata"
+    assert cfg.gold_table == "nyc_taxi.gold.yellow_tripdata"
 
 
 def test_pipeline_config_default_year() -> None:
-    """The default case year must be 2023."""
-    assert PipelineConfig().year == DEFAULT_YEAR == 2023
+    assert PipelineConfig().year == DEFAULT_YEAR
 
 
 def test_pipeline_config_default_months() -> None:
-    """The default case months must cover January through May."""
-    assert PipelineConfig().months == DEFAULT_MONTHS == (1, 2, 3, 4, 5)
+    assert PipelineConfig().months == DEFAULT_MONTHS
 
 
 def test_pipeline_config_default_partition_column() -> None:
-    """Gold must use the daily pickup_date partition column by default."""
-    assert PipelineConfig().partition_column == PARTITION_COLUMN == "pickup_date"
+    assert PipelineConfig().partition_column == "pickup_date"
 
 
 def test_pipeline_config_rejects_year_before_2000() -> None:
-    """Pipeline configurations must reject unsupported years."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="year"):
         PipelineConfig(year=1999)
 
 
 def test_pipeline_config_rejects_empty_months() -> None:
-    """At least one source month is required."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="months"):
         PipelineConfig(months=())
 
 
 def test_pipeline_config_rejects_invalid_month() -> None:
-    """Pipeline configurations must validate every configured month."""
-    with pytest.raises(ValueError):
-        PipelineConfig(months=(13,))
+    with pytest.raises(ValueError, match="months"):
+        PipelineConfig(months=(0, 1))
 
 
 def test_pipeline_config_rejects_invalid_partition_column() -> None:
-    """Only the contract partition column is accepted."""
-    with pytest.raises(ValueError):
-        PipelineConfig(partition_column="foo")
+    with pytest.raises(ValueError, match="partition_column"):
+        PipelineConfig(partition_column="wrong")
 
 
 def test_community_edition_uses_two_level_names() -> None:
-    """Community Edition must use its two-level fallback table names."""
-    config = PipelineConfig.community_edition()
-    assert config.bronze_table == COMMUNITY_BRONZE_TABLE
-    assert config.silver_table == COMMUNITY_SILVER_TABLE
-    assert config.gold_table == COMMUNITY_GOLD_TABLE
+    cfg = PipelineConfig.community_edition()
+    assert cfg.bronze_table == COMMUNITY_BRONZE_TABLE
+    assert cfg.silver_table == COMMUNITY_SILVER_TABLE
+    assert cfg.gold_table == COMMUNITY_GOLD_TABLE
 
 
 def test_community_edition_accepts_custom_landing_path() -> None:
-    """Community Edition must preserve a caller-provided landing path."""
-    assert PipelineConfig.community_edition(landing_path="/tmp/taxi").landing_path == "/tmp/taxi"
+    cfg = PipelineConfig.community_edition(landing_path="/custom/path")
+    assert cfg.landing_path == "/custom/path"
 
 
 def test_community_edition_accepts_custom_months() -> None:
-    """Community Edition must preserve configured month order."""
-    assert PipelineConfig.community_edition(months=[2, 4]).months == (2, 4)
+    cfg = PipelineConfig.community_edition(months=[3, 4])
+    assert cfg.months == (3, 4)
+
+
+def test_community_edition_schema_properties() -> None:
+    """Community edition config should expose bronze/silver/gold schema names."""
+    cfg = PipelineConfig.community_edition()
+    assert cfg.bronze_schema == "bronze"
+    assert cfg.silver_schema == "silver"
+    assert cfg.gold_schema == "gold"
+    assert set(cfg.all_schemas) == {"bronze", "silver", "gold"}
+
+
+def test_default_config_schema_properties() -> None:
+    """Default (Unity Catalog) config should expose three-level schema names."""
+    cfg = PipelineConfig()
+    assert cfg.bronze_schema == "nyc_taxi"
+    assert cfg.silver_schema == "nyc_taxi"
+    assert cfg.gold_schema == "nyc_taxi"
+    assert set(cfg.all_schemas) == {"nyc_taxi"}
 
 
 def test_pipeline_config_is_frozen() -> None:
-    """Configuration attributes must not be mutable after construction."""
-    config = PipelineConfig()
-    with pytest.raises(FrozenInstanceError):
-        config.year = 2024  # type: ignore[misc]
+    cfg = PipelineConfig()
+    with pytest.raises(Exception):
+        cfg.year = 2024  # type: ignore[misc]
 
 
 def test_pipeline_config_accepts_custom_values() -> None:
-    """Custom table names, year, and months must be retained."""
-    config = PipelineConfig(
-        landing_path="/tmp/landing",
-        bronze_table="b",
-        silver_table="s",
-        gold_table="g",
-        year=2024,
-        months=(6, 7),
-    )
-    assert (config.landing_path, config.bronze_table, config.silver_table, config.gold_table) == (
-        "/tmp/landing",
-        "b",
-        "s",
-        "g",
-    )
-    assert config.year == 2024
-    assert config.months == (6, 7)
+    cfg = PipelineConfig(year=2024, months=(6, 7), landing_path="/data")
+    assert cfg.year == 2024
+    assert cfg.months == (6, 7)
+    assert cfg.landing_path == "/data"

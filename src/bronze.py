@@ -4,19 +4,35 @@ from typing import Sequence
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import StringType
 
 from .schemas import RAW_SCHEMA
 from .data_quality import validate_schema
+
+
+def create_schemas(spark: SparkSession, schemas: Sequence[str]) -> None:
+    """Create Hive databases if they do not exist (needed for Community Edition).
+
+    Deduplicates schema names to avoid redundant DDL calls.
+    """
+    seen: set[str] = set()
+    for schema in schemas:
+        if schema not in seen:
+            seen.add(schema)
+            spark.sql(f"CREATE DATABASE IF NOT EXISTS {schema}")
+
+
+def drop_table_if_exists(spark: SparkSession, table_name: str) -> None:
+    """Safely drop a table, tolerating missing schema or table."""
+    try:
+        spark.sql(f"DROP TABLE IF EXISTS {table_name}")
+    except Exception:
+        pass
 
 
 def ingest_to_bronze(
     spark: SparkSession, file_paths: Sequence[str], table_name: str
 ) -> DataFrame:
     """Read raw Parquet files and append them to a Delta Bronze table.
-
-    Bronze preserves the source columns and does not silently discard malformed
-    records. Lineage fields allow replay, audit, and later quarantine decisions.
 
     Uses _metadata.file_path (Spark 3.0+) instead of input_file_name() because
     Unity Catalog does not support input_file_name().
@@ -30,8 +46,6 @@ def ingest_to_bronze(
     if not validate_schema(raw_df, RAW_SCHEMA):
         raise ValueError("Bronze input schema does not match RAW_SCHEMA")
 
-    # Use _metadata.file_path for lineage instead of F.input_file_name()
-    # because Unity Catalog does not support input_file_name().
     bronze_df = (
         raw_df.withColumn("_source_file", F.col("_metadata.file_path"))
         .withColumn("_ingestion_timestamp", F.current_timestamp())

@@ -30,6 +30,7 @@ from pyspark.sql import functions as F
 
 from analysis.q1_monthly_avg_amount import answer_q1, answer_q1_with_optimization
 from analysis.q2_avg_passengers_per_hour import answer_q2, answer_q2_with_optimization
+from src.bronze import create_schemas
 from src.config import PipelineConfig
 
 USE_COMMUNITY_EDITION = True
